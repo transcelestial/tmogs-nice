@@ -34,6 +34,10 @@ import numpy as np
 from pathlib import Path
 import logging
 import sys, os, traceback
+from cv2 import imread #ocean here testing
+import cv2 as cv
+
+import datetime
 
 COMMAND = 0
 MOUNT = 1
@@ -44,6 +48,11 @@ NONE = 0
 STAR_OL = 1
 COARSE_CCL = 2
 FINE_FCL = 3
+DEMO = 4
+
+
+
+
 
 class GUI:
     """Create a Graphical User Interface which controls the given System.
@@ -83,7 +92,7 @@ class GUI:
                                                    .format(pypogs_system, gui_update_ms))
         gui_update_ms = int(gui_update_ms)
         self.root = tk.Tk()
-        self.root.title('pypogs: the PYthon Portable Optical Ground Station')
+        self.root.title('Transcelestial Mobile Optical Ground Station')
         self.root.resizable(False, False)
         self.sys = pypogs_system
         self.logger.debug('Setting styles')
@@ -101,6 +110,7 @@ class GUI:
         self.live_frame = LiveViewFrame(self.root, self.sys, self.logger)
         self.live_frame.grid(row=0, rowspan=2, column=2, padx=(0,10), pady=10)
         self.live_frame.start(gui_update_ms)
+
         self.logger.debug('Configuring main window columns')
         self.col1_frame = ttk.Frame(self.root)
         self.col1_frame.grid(row=1, column=0, padx=(10,0), pady=0, sticky=tk.E+tk.W+tk.N)
@@ -332,7 +342,7 @@ class TrackingControlFrame(ttk.Frame):
         self.sys = pypogs_system
         self._update_stop = True
         self._update_after = 1000
-        
+
         self.logger.debug('Creating label and buttons')
 
         ttk.Label(self, text='Tracking').pack(fill=tk.BOTH, expand=True)
@@ -368,6 +378,7 @@ class TrackingControlFrame(ttk.Frame):
                                                                 .pack(fill=tk.BOTH, expand=True)
         ttk.Button(self, text='Stop Tracking', command=self.stop_tracking_callback, width=12) \
                                                                 .pack(fill=tk.BOTH, expand=True)
+    
         self.update()
 
     def update(self):
@@ -419,25 +430,39 @@ class TrackingControlFrame(ttk.Frame):
         except Exception as err:
             self.logger.debug('Could not set FCL enable', exc_info=True)
             ErrorPopup(self, err, self.logger)
-#        self.update()
+        #self.update()
 
     def start_tracking_callback(self):
         if self.sys.mount is not None and self.sys.mount.is_init and self.sys.mount._is_sidereal_tracking:
             self.logger.debug('Sidereal tracking is on.  Will turn off.')
             self.sys.mount.stop_sidereal_tracking()
+        
+        # if self.target_selection_combo.get() == 'SPOTTRACKER':
+        #     try:
+        #         self.sys.sys_demo_bool_True() #set system_demo_bool to True
+        #         self.sys.tar_demo_bool_True() #set target_demo_bool to True
+        #         #self.sys.start_demo_tracking_v2() #uncomment this when the skipping stuff is done
+        #     except Exception as err:
+        #         self.logger.debug('Did not start tracking', exc_info=True)
+        #         ErrorPopup(self, err, self.logger)
+
+        # else:
         try:
             self.sys.start_tracking()
         except Exception as err:
             self.logger.debug('Did not start tracking', exc_info=True)
             ErrorPopup(self, err, self.logger)
+            
     def stop_tracking_callback(self):
         self.logger.debug('TrackingControlFrame got stop request')
         try:
+            # self.sys.sys_demo_bool_False() #set system_demo_bool to False
+            # self.sys.tar_demo_bool_False() #set target_demo_bool to False
             self.sys.stop()
         except Exception as err:
             self.logger.debug('Did not stop', exc_info=True)
             ErrorPopup(self, err, self.logger)
-
+    
     def start(self, after=None):
         """Give number of milliseconds to wait between updates."""
         self.logger.debug('TrackingControlFrame got start request with after={}'.format(after))
@@ -471,6 +496,10 @@ class LiveViewFrame(ttk.Frame):
         self.bottom_frame2 = ttk.Frame(self)
         self.bottom_frame2.grid(row=3, column=0, pady=(5,0))
 
+        self.prev_cam = 0
+        self.start_time = None
+        self.n_frames = 0
+
         self.logger.debug('Filling top frame with label')
         ttk.Label(self.top_frame, text='Live View and Interactive Control').grid(row=0, column=0, padx=(250,0))
         self.zoom_variable = tk.IntVar()
@@ -495,11 +524,14 @@ class LiveViewFrame(ttk.Frame):
         self.tk_image = None
         self.canvas_image = None
         self.logger.debug('Creating radiobuttons for camera selection')
+        self.is_demo_tracking = False #ocean here, for checking demo tracking
+        self.tracking_frame = None #ocean here, for inputting tracking image
 
         # Top row under live view
         self.logger.debug('Filling bottom frame with interactive controls')
         ttk.Label(self.bottom_frame1, text='Camera (Tracker):').grid(row=0, column=0)
         self.camera_variable = tk.IntVar()
+        
         self.camera_variable.set(NONE)
         ttk.Radiobutton(self.bottom_frame1, text='None', variable=self.camera_variable, value=NONE) \
                 .grid(row=0, column=1, padx=(5,0))
@@ -509,12 +541,15 @@ class LiveViewFrame(ttk.Frame):
                 .grid(row=0, column=4, padx=(5,0))
         ttk.Radiobutton(self.bottom_frame1, text='Fine (FCL)', variable=self.camera_variable, value=FINE_FCL) \
                 .grid(row=0, column=5, padx=(5,0))
+        # ttk.Radiobutton(self.bottom_frame1, text='DEMO', variable=self.camera_variable, value=DEMO) \
+        #         .grid(row=0, column=5, padx=(5,0))
         self.logger.debug('Creating entry and checkbox for image max value control')
         ttk.Label(self.bottom_frame1, text='Max Value:').grid(row=0, column=6, padx=(20,0))
         self.max_entry = ttk.Entry(self.bottom_frame1, width=10)
+        self.max_entry.insert(0,'1023')
         self.max_entry.grid(row=0, column=7, padx=(5,0))
         self.auto_max_variable = tk.BooleanVar()
-        self.auto_max_variable.set(True)
+        self.auto_max_variable.set(False)
         ttk.Checkbutton(self.bottom_frame1, variable=self.auto_max_variable, text='Auto')\
                                                                             .grid(row=0, column=8, padx=(5,0))
 
@@ -532,6 +567,9 @@ class LiveViewFrame(ttk.Frame):
                                                             .grid(row=0, column=1)
         ttk.Button(self.bottom_frame2, text='Clear Track', command=self.clear_tracker_callback) \
                                                             .grid(row=0, column=2, padx=(5,0))
+        ttk.Button(self.bottom_frame2, text='Record Camera ', command=self.record_cam) \
+                                                            .grid(row=1, column=2, padx=(5,0))
+
 
         self.add_offset_variable = tk.BooleanVar()
         self.add_offset_variable.set(False)
@@ -540,11 +578,30 @@ class LiveViewFrame(ttk.Frame):
         ttk.Button(self.bottom_frame2, text='Clear Offset', command=self.clear_offset_callback) \
                                                             .grid(row=0, column=4, padx=(5,0))
 
+        
+        
         self.set_goal_variable = tk.BooleanVar()
         self.set_goal_variable.set(False)
-        ttk.Checkbutton(self.bottom_frame2, text='Intercam Alignment', variable=self.set_goal_variable) \
+        ttk.Checkbutton(self.bottom_frame2, text='Intercam Click Alignment', variable=self.set_goal_variable) \
                                                             .grid(row=0, column=5, padx=(50,0))
+        
+        
+        ttk.Label(self.bottom_frame2, text='X alignment:').grid(row=1, column=5, padx=(5,0))
+        self.alignment_x_entry = ttk.Entry(self.bottom_frame2, width=10)
+        self.alignment_x_entry.insert(0,'4.5')
+        self.alignment_x_entry.grid(row=1, column=6, padx=(5,0))
+        
+        ttk.Label(self.bottom_frame2, text='Y alignment:').grid(row=2, column=5, padx=(5,0))
+        self.alignment_y_entry = ttk.Entry(self.bottom_frame2, width=10)
+        self.alignment_y_entry.insert(0,'2')
+        self.alignment_y_entry.grid(row=2, column=6, padx=(5,0))
+        
+        ttk.Button(self.bottom_frame2, text='Manual Alignment', command=self.manual_set_goal) \
+                                                            .grid(row=3, column=5, padx=(50,0))     
 
+        ttk.Button(self.bottom_frame2, text='Reset Alignment', command=self.reset_goal) \
+                                                            .grid(row=4, column=5, padx=(50,0))                                                                
+                                                            
         self.annotate_variable = tk.BooleanVar()
         self.annotate_variable.set(True)
         self.goal_handles = [None]*4
@@ -556,6 +613,13 @@ class LiveViewFrame(ttk.Frame):
                                                             .grid(row=0, column=6, padx=(50,0))											
 
         self.logger.debug('Finished creating. Calling update on self')
+
+        #OCEAN HERE DEMO TRACKING TEST    
+        ttk.Button(self.bottom_frame2, text='Start DEMO Tracking', command=self.start_demo_tracking_callback_v2) \
+                                                            .grid(row=1, column=4, padx=(5,0))
+        ttk.Button(self.bottom_frame2, text='Stop DEMO Tracking', command=self.stop_demo_tracking_callback_v2) \
+                                                            .grid(row=2, column=4, padx=(5,0))                                                                                                             
+
         self.update()
 
     def clear_tracker_callback(self):
@@ -585,6 +649,9 @@ class LiveViewFrame(ttk.Frame):
                 ErrorPopup(self, err, self.logger)
         else:
             self.logger.debug('No camera selected in clear tracker callback')
+
+    def record_cam(self):
+        pass
 
     def clear_offset_callback(self):
         """Clear the offset *of the preceding tracker*."""
@@ -677,6 +744,12 @@ class LiveViewFrame(ttk.Frame):
                     goal = [x_image / self.image_scale * plate_scale, y_image / self.image_scale * plate_scale]
                     self.logger.info('Setting OL goal to: ' + str(goal))
                     self.sys.control_loop_thread.OL_goal_x_y = goal
+                    #update alignment entry box
+                    goal = [goal[0]/plate_scale * self.image_scale, goal[1]/plate_scale * self.image_scale]
+                    self.alignment_x_entry.delete(0, 'end')
+                    self.alignment_y_entry.delete(0, 'end')
+                    self.alignment_x_entry.insert(0,str(goal[0]))
+                    self.alignment_y_entry.insert(0,str(goal[1]))
                 except Exception as err:
                     self.logger.debug('Could not set OL goal', exc_info=True)
                     ErrorPopup(self, err, self.logger)
@@ -687,6 +760,12 @@ class LiveViewFrame(ttk.Frame):
                     goal = [x_image / self.image_scale * plate_scale, y_image / self.image_scale * plate_scale]
                     self.logger.info('Setting coarse goal to: ' + str(goal))
                     self.sys.coarse_track_thread.goal_x_y = goal
+                    #update alignment entry box
+                    goal = [goal[0]/plate_scale * self.image_scale, goal[1]/plate_scale * self.image_scale]
+                    self.alignment_x_entry.delete(0, 'end')
+                    self.alignment_y_entry.delete(0, 'end')
+                    self.alignment_x_entry.insert(0,str(goal[0]))
+                    self.alignment_y_entry.insert(0,str(goal[1]))
                 except Exception as err:
                     self.logger.debug('Could not set CCL goal', exc_info=True)
                     ErrorPopup(self, err, self.logger)
@@ -697,6 +776,12 @@ class LiveViewFrame(ttk.Frame):
                     goal = [x_image / self.image_scale * plate_scale, y_image / self.image_scale * plate_scale]
                     self.logger.info('Setting fine goal to: ' + str(goal))
                     self.sys.fine_track_thread.goal_x_y = goal
+                    #update alignment entry box
+                    goal = [goal[0]/plate_scale * self.image_scale, goal[1]/plate_scale * self.image_scale]
+                    self.alignment_x_entry.delete(0, 'end')
+                    self.alignment_y_entry.delete(0, 'end')
+                    self.alignment_x_entry.insert(0,str(goal[0]))
+                    self.alignment_y_entry.insert(0,str(goal[1]))
                 except Exception as err:
                     self.logger.debug('Could not set FCL goal', exc_info=True)
                     ErrorPopup(self, err, self.logger)
@@ -763,6 +848,7 @@ class LiveViewFrame(ttk.Frame):
             cam = self.camera_variable.get()
             if cam == COARSE_CCL:
                 self.logger.debug('Setting search pos for CCL')
+                self.logger.info('Setting search pos for CCL')
                 plate_scale = self.sys.coarse_camera.plate_scale
                 search_pos = [x_image / self.image_scale * plate_scale, y_image / self.image_scale * plate_scale]
                 self.logger.info('Setting coarse search position to: ' + str(search_pos))
@@ -776,20 +862,173 @@ class LiveViewFrame(ttk.Frame):
             else:
                 self.logger.error('No camera selected in canvas click callback')
             self.set_search_variable.set(False)
+     
+    # if img is not None:
+    #         if self.auto_max_variable.get(): #Auto set max scaling
+    #             maxval = int(np.max(img))
+    #             self.max_entry.delete(0, 'end')
+    #             self.max_entry.insert(0, str(maxval))
+    #             self.logger.debug('Using auto max scaling with maxval {}'.format(maxval))
+    #         else:
+    #             try:
+    #                 maxval = int(self.max_entry.get())
+    #                 self.logger.debug('Using manual maxval {}'.format(maxval))
+    #             except:
+    #                 self.logger.debug('Failed to convert max entry value {} to int'\
+    #                                    .format(self.max_entry.get()))
+    #                 maxval = 255
+
+
+    def manual_set_goal(self):
+        align_x = 0
+        align_y = 0
+        print(self.canvas_size)
+        try:
+            assert -float(self.canvas_size[0] /2) <= float(self.alignment_x_entry.get()) <= float(self.canvas_size[0] /2), 'Cannot set X goal beyond frame size'
+            align_x = float(self.alignment_x_entry.get())
+        except Exception as err:
+            self.logger.debug('Failed to set X goal', exc_info=True)
+            ErrorPopup(self, err, self.logger)
+            self.alignment_x_entry.delete(0, 'end')
+            self.alignment_x_entry.insert(0,'0.0')
+        
+        try:
+            assert -float(self.canvas_size[1] /2) <= float(self.alignment_y_entry.get()) <= float(self.canvas_size[1] /2), 'Cannot set Y goal beyond frame size'
+            align_y = float(self.alignment_y_entry.get())
+        except Exception as err:
+            self.logger.debug('Failed to set X goal', exc_info=True)
+            ErrorPopup(self, err, self.logger)
+            self.alignment_y_entry.delete(0, 'end')
+            self.alignment_y_entry.insert(0,'0.0')
+        
+        
+        cam = self.camera_variable.get()
+        if cam == STAR_OL:
+            self.logger.debug('Setting goal for OL tracker from Star camera')
+            try:
+                plate_scale = self.sys.star_camera.plate_scale
+                goal = [align_x / self.image_scale * plate_scale, align_y / self.image_scale * plate_scale]
+                self.logger.info('Setting OL goal to: ' + str(goal))
+                self.sys.control_loop_thread.OL_goal_x_y = goal
+            except Exception as err:
+                self.logger.debug('Could not set OL goal', exc_info=True)
+                ErrorPopup(self, err, self.logger)
+        elif cam == COARSE_CCL:
+            self.logger.debug('Setting goal for CCL tracker from Coarse camera')
+            try:
+                plate_scale = self.sys.coarse_camera.plate_scale
+                goal = [align_x / self.image_scale * plate_scale, align_y / self.image_scale * plate_scale]
+                self.logger.info('Setting coarse goal to: ' + str(goal))
+                self.sys.coarse_track_thread.goal_x_y = goal
+            except Exception as err:
+                self.logger.debug('Could not set CCL goal', exc_info=True)
+                ErrorPopup(self, err, self.logger)
+        elif cam == FINE_FCL:
+            self.logger.debug('Setting goal for FCL tracker from Fine camera')
+            try:
+                plate_scale = self.sys.fine_camera.plate_scale
+                goal = [align_x / self.image_scale * plate_scale, align_y / self.image_scale * plate_scale]
+                self.logger.info('Setting fine goal to: ' + str(goal))
+                self.sys.fine_track_thread.goal_x_y = goal
+            except Exception as err:
+                self.logger.debug('Could not set FCL goal', exc_info=True)
+                ErrorPopup(self, err, self.logger)
+        else:
+            self.logger.debug('No camera selected in canvas')
+
+
+    def reset_goal(self):
+        # self.logger.debug('Resetting goal')
+        # if event.x > self.image_size[0] or event.y > self.image_size[1]:
+        #     self.logger.debug('Outside image')
+        #     x_image = None
+        #     y_image = None
+        # else:
+        #     x_image = event.x - self.image_size[0] / 2
+        #     y_image = self.image_size[1] / 2 - event.y #Camera coordinates are opposite
+        #     self.logger.debug('Image coordinates x:' + str(x_image) + ' y:' + str(y_image)):
+        self.alignment_x_entry.delete(0, 'end')
+        self.alignment_y_entry.delete(0, 'end')
+
+        self.alignment_x_entry.insert(0,'0')
+        self.alignment_y_entry.insert(0,'0')
+        cam = self.camera_variable.get()
+        if cam == STAR_OL:
+            self.logger.debug('Resetting goal for OL tracker from Star camera')
+            try:
+                goal = [0, 0]
+                self.logger.info('Resetting OL goal to: ' + str(goal))
+                self.sys.control_loop_thread.OL_goal_x_y = goal
+            except Exception as err:
+                self.logger.debug('Could not set OL goal', exc_info=True)
+                ErrorPopup(self, err, self.logger)
+        elif cam == COARSE_CCL:
+            self.logger.debug('Resetting goal for CCL tracker from Coarse camera')
+            try:
+                goal = [0, 0]
+                self.logger.info('Resetting coarse goal to: ' + str(goal))
+                self.sys.coarse_track_thread.goal_x_y = goal
+            except Exception as err:
+                self.logger.debug('Could not set CCL goal', exc_info=True)
+                ErrorPopup(self, err, self.logger)
+        elif cam == FINE_FCL:
+            self.logger.debug('Resetting goal for FCL tracker from Fine camera')
+            try:
+                goal = [0, 0]
+                self.logger.info('Resetting fine goal to: ' + str(goal))
+                self.sys.fine_track_thread.goal_x_y = goal
+            except Exception as err:
+                self.logger.debug('Could not set FCL goal', exc_info=True)
+                ErrorPopup(self, err, self.logger)
+        else:
+            self.logger.debug('No camera selected in canvas click callback')
+
+    def start_demo_tracking_callback_v2(self):
+        if self.sys.mount is not None and self.sys.mount.is_init and self.sys.mount._is_sidereal_tracking:
+            self.logger.debug('Sidereal tracking is on.  Will turn off.')
+            self.sys.mount.stop_sidereal_tracking()
+        try:
+            self.sys.sys_demo_bool_True() #set system_demo_bool to True
+            #self.sys.tar_demo_bool_True() #set target_demo_bool to True
+            self.sys.start_demo_tracking_v2() 
+        except Exception as err:
+            self.logger.debug('Did not start tracking', exc_info=True)
+            ErrorPopup(self, err, self.logger)
+            
+    def stop_demo_tracking_callback_v2(self):
+        self.logger.debug('TrackingControlFrame got stop request')
+        try:
+            self.sys.sys_demo_bool_False() #set system_demo_bool to False
+            #self.sys.tar_demo_bool_False() #set target_demo_bool to False
+            self.sys.stop()
+        except Exception as err:
+            self.logger.debug('Did not stop', exc_info=True)
+            ErrorPopup(self, err, self.logger)
+
 
     def update(self):
         """Update the canvas with an image"""
         self.logger.debug('LiveViewFrame got update request')
-        # Read desired camera
         cam = self.camera_variable.get()
         self.logger.debug('Selected camera is {} (1 star, 2 coarse, 3 fine, 0 none)'.format(cam))
         # Check if we have it, otherwise switch to none
         if cam == STAR_OL and (self.sys.star_camera is None or not self.sys.star_camera.is_init): cam = NONE
         if cam == COARSE_CCL and (self.sys.coarse_camera is None or not self.sys.coarse_camera.is_init): cam = NONE
         if cam == FINE_FCL and (self.sys.fine_camera is None or not self.sys.fine_camera.is_init): cam = NONE
+
+        if self.prev_cam != cam:
+            if self.prev_cam == 0:
+                self.prev_cam = cam
+            else:
+                print("GUI FPS: ", self.n_frames/(datetime.datetime.now() - self.start_time).total_seconds())
+                self.prev_cam = cam 
+                self.n_frames = 0
+            self.start_time = datetime.datetime.now()
+        
         self.logger.debug('After validity checks setting camera to {}'.format(cam))
         self.camera_variable.set(cam)
         img = None
+
         goal_pos = (None, None)
         offset_pos = (None, None)
         plate_scale = None
@@ -800,11 +1039,25 @@ class LiveViewFrame(ttk.Frame):
         search_pos = (None, None)
         search_rad = None
         exposure = None
+
+        # #checks if demo tracking is on
+        
+        # if cam == DEMO:
+        #     if self.is_demo_tracking == True:
+        #         self.logger.debug('Trying to get DEMO tracking data')
+        #         self.logger.info('Trying to get DEMO tracking data')
+        #         img = self.tracking_frame
+        #         self.start_demo_tracking_callback()
+        #     else:
+        #         img = None
+
+
         if cam == STAR_OL:
             self.logger.debug('Trying to get star OL data')
+            self.logger.info('Trying to get star OL data')
             try:
                 if not self.sys.star_camera.is_running: self.sys.star_camera.start()
-                img = self.sys.star_camera.get_latest_image()
+                img = self.sys.star_camera.get_latest_image() 
                 plate_scale = self.sys.star_camera.plate_scale
                 rotation = self.sys.star_camera.rotation
                 goal_pos = self.sys.control_loop_thread.OL_goal_x_y
@@ -815,6 +1068,7 @@ class LiveViewFrame(ttk.Frame):
                     self.logger.debug('Could not get offset', exc_info=True)
             except:
                 self.logger.debug('Failed', exc_info=True)
+
         elif cam == COARSE_CCL:
             self.logger.debug('Trying to get coarse CCL data')
             try:
@@ -855,6 +1109,17 @@ class LiveViewFrame(ttk.Frame):
                 exposure = self.sys.fine_camera.exposure_time
             except:
                 self.logger.debug('Failed', exc_info=True)
+        
+        # elif cam == NONE:
+        #     # if self.sys.star_camera and self.sys.coarse_camera and self.sys.fine_camera == None:
+        #     if self.is_demo_tracking == True:
+        #         self.logger.debug('Trying to get DEMO tracking data')
+        #         self.logger.info('Trying to get DEMO tracking data')
+        #         img = self.tracking_frame
+        #         self.start_demo_tracking_callback()
+        #     else:
+        #         img = None
+
 
         if img is not None:
             zoom = self.zoom_variable.get()
@@ -863,10 +1128,12 @@ class LiveViewFrame(ttk.Frame):
             offs_y = round(height / 2 * (1 - 1/zoom))
             width = width//zoom
             height = height//zoom
+            
             try:
                 img = img[offs_y:offs_y+height, offs_x:offs_x+width]
             except:
                 self.logger.warning('Failed to zoom image')
+
 
         #self.logger.debug('Setting image to: ' + str(img))
         if img is not None:
@@ -893,14 +1160,14 @@ class LiveViewFrame(ttk.Frame):
             self.logger.debug('Resizing image to: ' + str(self.image_size))
             pil_img = pil_img.resize(self.image_size, resample=Image.NEAREST)
             # Set canvas image (must keep reference to image, otherwise will be garbage collected)
-            self.tk_image = ImageTk.PhotoImage(image=pil_img)
+            self.tk_image = ImageTk.PhotoImage(image=pil_img) 
             if self.canvas_image is None:
                 self.logger.debug('Creating image on canvas')
                 self.canvas_image = self.canvas.create_image(0, 0, image=self.tk_image, anchor=tk.NW)
             else:
                 self.canvas.itemconfig(self.canvas_image, image=self.tk_image)
                 self.logger.debug('Image was updated')
-
+            #goal crosshair, this is the big arrow head crosshair which shows the goal for the bright spot
             if self.annotate_variable.get() and not None in (goal_pos[0], goal_pos[1], plate_scale):
                 self.logger.debug('Annotating Goal: ' + str(goal_pos) + ' scale: ' + str(plate_scale))
                 gap = 5
@@ -928,6 +1195,7 @@ class LiveViewFrame(ttk.Frame):
                                                                    arrowshape=(10,14,6))
                     self.goal_handles[3] = self.canvas.create_line(*xhair[:,6], *xhair[:,7], fill='blue',\
                                                                    width=width, tag='goal')
+                    
                 else:
                     self.canvas.coords(self.goal_handles[0], *xhair[:,0], *xhair[:,1])
                     self.canvas.coords(self.goal_handles[1], *xhair[:,2], *xhair[:,3])
@@ -937,7 +1205,7 @@ class LiveViewFrame(ttk.Frame):
             else:
                 self.logger.debug('Hiding goal')
                 self.canvas.tag_lower('goal')
-
+            #offset marker, this is the small lighter crosshair in the middle of main cross hair
             if self.annotate_variable.get() and not None in (offset_pos[0], offset_pos[1], plate_scale):
                 self.logger.debug('Annotating Offset: ' + str(offset_pos) + ' scale: ' + str(plate_scale))
                 gap = 5
@@ -961,7 +1229,7 @@ class LiveViewFrame(ttk.Frame):
                     self.offset_handles[2] = self.canvas.create_line(*xhair[:,4], *xhair[:,5], fill='royal blue', \
                                                                        width=width, tag='offset')
                     self.offset_handles[3] = self.canvas.create_line(*xhair[:,6], *xhair[:,7], fill='royal blue', \
-                                                                       width=width, tag='offset')
+                                                                       width=width, tag='offset')                                                     
                 else:
                     self.canvas.coords(self.offset_handles[0], *xhair[:,0], *xhair[:,1])
                     self.canvas.coords(self.offset_handles[1], *xhair[:,2], *xhair[:,3])
@@ -971,14 +1239,13 @@ class LiveViewFrame(ttk.Frame):
             else:
                 self.logger.debug('Hiding offset')
                 self.canvas.tag_lower('offset')
-
-            if self.annotate_variable.get() and not None in (mean_pos[0], mean_pos[1], track_sd, plate_scale):
-                self.logger.debug('Annotating Mean: ' + str(mean_pos) + ' scale: ' + str(track_sd))
+            #mean circle, green circle
+            if self.annotate_variable.get() and not None in (mean_pos[0], mean_pos[1], track_sd, plate_scale): #ocean: circle is here
+                self.logger.debug('Annotating Mean: ' + str(mean_pos) + ' scale: ' + str(track_sd) + ' image_scale: ' + str(self.image_scale)) #just to see the image scale
                 canvas_x = mean_pos[0] / plate_scale * self.image_scale + self.image_size[0] / 2 - .5
                 canvas_y = -mean_pos[1] / plate_scale * self.image_scale + self.image_size[1] / 2 + .5
                 canvas_sd = track_sd / plate_scale * self.image_scale
                 coords = (canvas_x-canvas_sd, canvas_y-canvas_sd, canvas_x+canvas_sd, canvas_y+canvas_sd)
-                self.logger.debug('Circle goes at: ' + str((canvas_x, canvas_y)) + ' radius: ' + str(canvas_sd))
                 colour = 'green'
                 if self.track_circle_handle is None:
                     self.track_circle_handle = self.canvas.create_oval(*coords, outline=colour, width=2, tag='mean')
@@ -988,7 +1255,8 @@ class LiveViewFrame(ttk.Frame):
             else:
                 self.logger.debug('Hiding mean')
                 self.canvas.tag_lower('mean')
-
+                
+            #search circle, blue circle
             if self.annotate_variable.get() and not None in (search_pos[0], search_pos[1], search_rad, plate_scale):
                 self.logger.debug('Annotating Search: ' + str(search_pos) + ' radius: ' + str(search_rad))
                 canvas_x = search_pos[0] / plate_scale * self.image_scale + self.image_size[0] / 2 - .5
@@ -1005,7 +1273,7 @@ class LiveViewFrame(ttk.Frame):
             else:
                 self.logger.debug('Hiding mean')
                 self.canvas.tag_lower('search')
-
+            #target cross, this is the small green cross hair on top of the bright spot pypogs is tracking
             if self.annotate_variable.get() and not None in (track_pos[0], track_pos[1], plate_scale):
                 self.logger.debug('Annotating Search: ' + str(track_pos) + ' radius: ' + str(search_rad))
                 canvas_x = track_pos[0] / plate_scale * self.image_scale + self.image_size[0] / 2 - .5
@@ -1021,6 +1289,7 @@ class LiveViewFrame(ttk.Frame):
                                                                           tag='track')
                     self.track_cross_handles[1] = self.canvas.create_line(coords_v, fill=colour, width=width,\
                                                                           tag='track')
+
                 else:
                     self.canvas.coords(self.track_cross_handles[0], coords_h)
                     self.canvas.coords(self.track_cross_handles[1], coords_v)
@@ -1054,6 +1323,9 @@ class LiveViewFrame(ttk.Frame):
             self.logger.debug('Calling update on self after {} ms'.format(self._update_after))
             self.after(self._update_after, self.update)
 
+        if cam != 0:
+            self.n_frames += 1
+
     def start(self, after=None):
         """Give number of milliseconds to wait between updates."""
         self.logger.debug('LiveViewFrame got start request with after={}'.format(after))
@@ -1065,7 +1337,6 @@ class LiveViewFrame(ttk.Frame):
         """Stop updating."""
         self.logger.debug('LiveViewFrame got stop request')
         self._update_stop = True
-
 
 class HardwareFrame(ttk.Frame):
     """Extends tkinter.Frame for controlling System hardware"""
@@ -1117,6 +1388,7 @@ class HardwareFrame(ttk.Frame):
     def update(self):
         """Update the status of all buttons."""
         self.logger.debug('HardwareFrame got update request')
+        self.logger.info('HardwareFrame got update request')
         # Mount
         if self.sys.mount is None:
             ttk.Style().configure('mount.TButton',\
@@ -1294,15 +1566,24 @@ class HardwareFrame(ttk.Frame):
                 ttk.Checkbutton(setup_frame, text='Link Star and Coarse', variable=self.linked_bool) \
                                                                 .grid(row=r, column=0)
                 r+=1
-
             ttk.Label(setup_frame, text='Model:').grid(row=r, column=0); r+=1
             self.model_combo = ttk.Combobox(setup_frame, values=master.sys._supported_models[device_type])
             self.model_combo.grid(row=r, column=0); r+=1
             self.model_combo.set(device.model if device and device.model else master.sys._default_model[device_type] or '')
             ttk.Label(setup_frame, text='Identity:').grid(row=r, column=0); r+=1
+                        # self.lat_entry.insert(0, str(round(old_lat, 4)))
             self.identity_entry = ttk.Entry(setup_frame, width=20)
             self.identity_entry.grid(row=r, column=0); r+=1
-            self.identity_entry.insert(0, device.identity if device and device.identity else '')
+            #ocean here we are lazy to type 
+            if device_type == 'mount':
+                self.identity_entry.insert(0, '/dev/ttyUSB0')
+            elif device_type == 'camera':
+                if title == 'Fine camera':
+                    self.identity_entry.insert(0, 0)
+                if title == 'Coarse camera':
+                    self.identity_entry.insert(0, 1)
+            else:
+                self.identity_entry.insert(0, device.identity if device and device.identity else '')
             ttk.Label(setup_frame, text='Name:').grid(row=r, column=0); r+=1
             self.name_entry = ttk.Entry(setup_frame, width=20)
             self.name_entry.grid(row=r, column=0); r+=1
@@ -1394,6 +1675,11 @@ class HardwareFrame(ttk.Frame):
                         label = ttk.Label(self.properties_frame, text='')
                     entry.grid(row=row, column=column+1)
                     label.grid(row=row, column=column, sticky=tk.E)
+                    # try:
+                    #     name = prop
+                    #     if name == "plate_scale":
+                    #         entry.insert(0, "14.2")
+                    #         label['text'] = name
                     try:
                         name = prop
                         value = str(getattr(self.device, name))
@@ -1413,6 +1699,7 @@ class HardwareFrame(ttk.Frame):
             else:
                 self.properties_frame.grid_forget() #Hide entirely from the popup
             # Hide any widgets no longer in use
+
             while i < len(self.property_entries):
                 (old_name, entry, old_value, label) =  self.property_entries[i]
                 entry.grid_forget()
@@ -1531,7 +1818,7 @@ class TargetFrame(ttk.Frame):
             ttk.Label(target_selection_frame, text='Select satellite:').grid(row=0, column=0, sticky=tk.W)
             self.target_selection_combo = ttk.Combobox(target_selection_frame, values=list(self.master.sys.saved_targets.keys()))
             self.target_selection_combo.grid(row=0, column=2, sticky="EW")
-            self.target_selection_combo.set('ISS')
+            self.target_selection_combo.set('JANUS-1')
             ttk.Button(target_selection_frame, text='Get', command=self.get_tle_for_selected_satellite).grid(row=0, column=3, sticky="EW")
 
             # Fetch TLE Input:
@@ -1688,7 +1975,8 @@ class TargetFrame(ttk.Frame):
         def clear_tle_callback(self):
             self.tle_line1_entry.delete(0, tk.END)
             self.tle_line2_entry.delete(0, tk.END)            
-                
+
+        #original code  
         def get_tle_for_selected_satellite(self):
             selected_sat_name = self.target_selection_combo.get()
             self.logger.info('Selected target name: '+selected_sat_name)
@@ -1697,7 +1985,20 @@ class TargetFrame(ttk.Frame):
             self.sat_norad_id_entry.delete(0, tk.END)
             self.sat_norad_id_entry.insert(0,str(self.sat_id))
             self.get_and_set_tle_callback()
-            
+
+        # def get_tle_for_selected_satellite(self):
+        #     selected_sat_name = self.target_selection_combo.get()
+        #     self.logger.info('Selected target name: '+selected_sat_name)
+        #     if selected_sat_name == 'SPOTTRACKER':
+        #         #demo tracking time
+        #         pass
+        #     else:
+        #         if selected_sat_name in self.master.sys.saved_targets:
+        #             self.sat_id = self.master.sys.saved_targets[selected_sat_name]
+        #         self.sat_norad_id_entry.delete(0, tk.END)
+        #         self.sat_norad_id_entry.insert(0,str(self.sat_id))
+        #         self.get_and_set_tle_callback()   
+
         def set_tle_callback(self):
             try:
                 line1 = self.tle_line1_entry.get()
@@ -1837,11 +2138,11 @@ class AlignmentFrame(ttk.Frame):
             self.logger = master.logger
             self.title('Location')
             self.resizable(False, False)
-#            self.grab_set() #Grab control
+            # self.grab_set() #Grab control
             try:
                 (old_lat, old_lon, old_height) = master.sys.alignment.get_location_lat_lon_height()
             except AssertionError:
-                (old_lat, old_lon, old_height) = (0.0,)*3
+                (old_lat, old_lon, old_height) = (1.32, 103.899, 33)  #tct eunos, default is (0.0,)*3  
 
             ttk.Label(self, text='Set Location').grid(row=0, column=0, columnspan=2)
             ttk.Label(self, text='Latitude: (deg)').grid(row=1, column=0, sticky=tk.E)
